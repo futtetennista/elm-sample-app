@@ -78,8 +78,8 @@ hamburgHaskellMeetupEvent =
     , meetup <- hhHaskellMeetup
     }
 
-partecipantsCount : Event -> Int
-partecipantsCount meetup = List.length meetup.partecipants
+numberOfPartecipants : Event -> Int
+numberOfPartecipants meetup = List.length meetup.partecipants
 
 isJoinAnonymously : Event -> Bool
 isJoinAnonymously event =
@@ -94,29 +94,29 @@ updateChannel : Signal.Channel Action
 updateChannel =
     Signal.channel Clear
 
-update : Action -> Event -> Event
-update action event =
+update : Action -> (Result String Bool, Event) -> (Result String Bool, Event)
+update action (_, event) =
     case action of
       Join -> join event
-      Clear -> hamburgHaskellMeetupEvent
-      Joining s -> { event | aboutToJoin <- s }
+      Clear -> (Ok True, hamburgHaskellMeetupEvent)
+      Joining s -> (Ok False, { event | aboutToJoin <- s })
 
-join : Event -> Event
+join : Event -> (Result String Bool, Event)
 join event =
-    case isJoinAnonymously (Debug.log "join" event) of
-      True  -> event
+    case isJoinAnonymously event of
+      True  -> (Err "Cannot join a meetup anonymously", event)
       False ->
-          { event | partecipants <- event.partecipants ++ [ Name event.aboutToJoin ]
+          (Ok True, { event | partecipants <- event.partecipants ++ [ Name event.aboutToJoin ]
           , aboutToJoin <- ""
-          }
+          })
 
-model : Signal Event
-model =
-    Signal.subscribe updateChannel |> Signal.foldp update hamburgHaskellMeetupEvent
+model : Signal (Result String Bool, Event)
+model = Signal.subscribe updateChannel
+      |> Signal.foldp update (Ok True, hamburgHaskellMeetupEvent)
 
 -- VIEW
-view : (Int, Int) -> Event -> Html
-view window event =
+view : (Int, Int) -> (Result String Bool, Event) -> String -> Html
+view window (_, event) now =
     div [ style [ ("padding", "16px") ] ]
         [ h1 [] [ text event.meetup.name ]
         , h2 [] [ text event.topic ]
@@ -125,6 +125,7 @@ view window event =
         , partecipantsView window (Debug.watchSummary "Partecipant List" (\e -> e.partecipants) event)
         , joinMeetupView window (Debug.watch "About to join" event.aboutToJoin)
         , clearView window
+        , text <| "Page last modified: " ++ now
         ]
 
 infoView : (Int, Int) -> Event -> Html
@@ -148,7 +149,7 @@ partecipantsCountView window event =
               []  -> "So far noboby joined this meetup...be the first!"
               [x] -> "So far 1 person joined this meetup"
               _   ->
-                  "So far " ++ (partecipantsCount event |> toString) ++ " people joined this meetup"
+                  "So far " ++ (numberOfPartecipants event |> toString) ++ " people joined this meetup"
     in h3 [] [ text title ]
 
 partecipantsView : (Int, Int) -> Event -> Html
@@ -190,8 +191,34 @@ clearView : (Int, Int) -> Html
 clearView window =
     div [] [ button [ onClick (Signal.send updateChannel Clear) ] [ text "Clear Partecipant list" ] ]
 
+-- PORTS
+-- outgoing signal
+port showError : Signal String
+port showError = Signal.map errMsg model
+               |> Signal.keepIf (not << String.isEmpty) ""
+
+errMsg : (Result String Bool, Event) -> String
+errMsg (res, _) =
+    case res of
+      Err msg -> msg
+      _       -> ""
+
+port getNow : Signal ()
+port getNow = Signal.map identity model
+            |> Signal.keepIf pageChanged (Ok True, emptyMeetupEvent)
+            |> Signal.map (\_ -> ())
+
+pageChanged : (Result String Bool, Event) -> Bool
+pageChanged (res, _) =
+    case res of
+      Ok True -> True
+      _       -> False
+
+-- incoming signal
+port now : Signal String
+
 
 
 main : Signal Html
 main =
-    Signal.map2 view Window.dimensions model
+    Signal.map3 view Window.dimensions model now
